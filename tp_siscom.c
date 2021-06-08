@@ -1,6 +1,6 @@
 /**
  * @file tp_siscom.c
- * @author Juan Ignacio Fernandez (juanfernandez@mi.unc.edu.ar)
+ * @author Juan Ignacio Fernandez (juanfernandez@mi.unc.edu.ar) y Juan Pablo Saucedo
  * @brief Manejador de dispositivo de caracter que desencripta los caracteres ingresados.
  */
 #include <linux/device.h>
@@ -20,7 +20,6 @@ static struct task_struct *ts = NULL;
 
 int init_module (void);
 void cleanup_module (void);
-void decrypt_string (size_t len);
 static int device_open (__attribute__ ((unused)) struct inode *inode,
                         __attribute__ ((unused)) struct file *file);
 static int device_release (__attribute__ ((unused)) struct inode *inode,
@@ -33,12 +32,12 @@ static ssize_t device_write (__attribute__ ((unused)) struct file *filp,
                              __attribute__ ((unused)) loff_t *off);
 static int mychardev_uevent (__attribute__ ((unused)) struct device *dev,
                              struct kobj_uevent_env *env);
-static int led_thread(void *data);
+static int get_inputs(void *data);
 
 
 #define SUCCESS 0
-#define DEVICE_NAME "siscom" /*!< Nombre del dispositivo (/proc/devices). */
-#define BUF_LEN 80              /*!< Longitud maxima del mensaje. */
+#define DEVICE_NAME "siscom"    /*!< Nombre del dispositivo (/proc/devices). */
+#define BUF_LEN 10              /*!< Longitud maxima del mensaje. */
 
 MODULE_LICENSE ("Dual BSD/GPL");
 MODULE_AUTHOR ("FERNANDEZ, Juan Ignacio");
@@ -47,8 +46,7 @@ static int major;                         /*!< Numero major asignado al disposit
 static int Device_Open = 0;               /*!< 0 -> No abierto ; 1 -> Abierto.  Se usa para
                                               impedir multiples disp abiertos. */
 static struct class *myclass = NULL;      /*!< Clase */
-static char msg[BUF_LEN] = { 0 };         /*!< Mensaje escrito sobre el dispositivo. */
-static char msg_decrypt[BUF_LEN] = { 0 }; /*!< Mensaje desencriptado. */
+static char msg[BUF_LEN] = { 0 };         /*!< Mensaje a mostrar en dev. */
 static char *msg_Ptr;                     /*!< Puntero al mensaje. */
 
 /*
@@ -104,7 +102,7 @@ init_module (void)
           DEVICE_NAME, major);
   printk (KERN_INFO "SisCom: Dispositivo: /dev/%s .\n", DEVICE_NAME);
 
-  ts = kthread_create(led_thread, NULL, "led_thread");
+  ts = kthread_create(get_inputs, NULL, "get_inputs");
 
 	if(ts) {
 		wake_up_process(ts);
@@ -140,7 +138,7 @@ device_open (__attribute__ ((unused)) struct inode *inode,
   if (Device_Open)
     return -EBUSY;
   Device_Open++;
-  msg_Ptr = msg_decrypt;
+  msg_Ptr = msg;
   try_module_get (THIS_MODULE);
   return SUCCESS;
 }
@@ -218,7 +216,7 @@ device_write (__attribute__ ((unused)) struct file *filp, const char *buff,
 //       printk (KERN_ERR "SisCom: Error al copiar el mensaje.\n");
 //       return 0;
 //     }
-//   if (__clear_user (msg_decrypt, BUF_LEN))
+//   if (__clear_user (msg, BUF_LEN))
 //     {
 //       printk (KERN_ERR "SisCom: Error al limpiar el mensaje.\n");
 //       return 0;
@@ -243,25 +241,8 @@ mychardev_uevent (__attribute__ ((unused)) struct device *dev,
   return 0;
 }
 
-/**
- * @brief Desencripta el mensaje recibido.
- *
- * @param len Longitud del mensaje.
- */
-void
-decrypt_string (size_t len)
-{
-  ssize_t i;
-  for (i = 0; i < len; i++)
-    {
-      msg_decrypt[i] = (char) (msg[i] - 1);
-    }
-  printk (KERN_INFO "SisCom: Desencriptacion finalizada.\n");
-  return;
-}
 
-
-static int led_thread(void *data)
+static int get_inputs(void *data)
 {
     int i = 1;
     int j, k, icopy;
@@ -271,10 +252,10 @@ static int led_thread(void *data)
 	// loop until killed ...
 	while(!kthread_should_stop()) {
     if(i>1000) i=0;
-		// msg_decrypt[0] = (char) i;
-    // msg_decrypt[1] = '/0';
+		// msg[0] = (char) i;
+    // msg[1] = '/0';
 
-    // if (copy_from_user (msg_decrypt, buff, len))
+    // if (copy_from_user (msg, buff, len))
     // {
     //   printk (KERN_ERR "SisCom: Error al copiar el mensaje.\n");
     //   return 0;
@@ -294,13 +275,13 @@ static int led_thread(void *data)
     
 
     // val[j] = '/0';
-    // memcpy(msg_decrypt, i, sizeof(i));
+    // memcpy(msg, i, sizeof(i));
     // sprintf
 
-    // strcpy(msg_decrypt, i);
-    strcpy(msg_decrypt, val);
+    // strcpy(msg, i);
+    strcpy(msg, val);
     // i++;
-    printk (KERN_INFO "SisCom: Nuevo mensaje: %s. val: %s valor i: %d\n", msg_decrypt, val, i);
+    printk (KERN_INFO "SisCom: Nuevo mensaje: %s. val: %s valor i: %d\n", msg, val, i);
 		mdelay(1000);
     i++;
 	}
