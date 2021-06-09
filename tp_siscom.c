@@ -16,11 +16,8 @@
 #include <linux/string.h>
 #include <linux/uaccess.h>
 
-/* Task handle to identify thread */
-static struct task_struct *ts = NULL;
-
-int init_module (void);
-void cleanup_module (void);
+int __init tp_init (void);
+void __exit tp_exit (void);
 static int device_open (__attribute__ ((unused)) struct inode *inode,
                         __attribute__ ((unused)) struct file *file);
 static int device_release (__attribute__ ((unused)) struct inode *inode,
@@ -34,6 +31,17 @@ static ssize_t device_write (__attribute__ ((unused)) struct file *filp,
 static int mychardev_uevent (__attribute__ ((unused)) struct device *dev,
                              struct kobj_uevent_env *env);
 static int get_inputs (void *data);
+
+/* Task handle to identify thread */
+static struct task_struct *ts = NULL;
+
+/* Define BUTTONs */
+static struct gpio buttons[] = {
+  { 12, GPIOF_IN, "BUTTON 1" },
+  { 13, GPIOF_IN, "BUTTON 2" },
+  { 19, GPIOF_IN, "BUTTON 3" },
+  { 26, GPIOF_IN, "BUTTON 4" },
+};
 
 #define SUCCESS 0
 #define DEVICE_NAME "siscom" /*!< Nombre del dispositivo (/proc/devices). */
@@ -65,8 +73,10 @@ static struct file_operations fops = { .read = device_read,
  * @return int 0 en el caso que finalice correctamente.
  */
 int
-init_module (void)
+__init tp_init (void)
 {
+  int ret = 0;
+
   /* Se registra el dispositivo de caracter */
   major = register_chrdev (0, DEVICE_NAME, &fops);
   if (major < 0)
@@ -102,11 +112,26 @@ init_module (void)
           DEVICE_NAME, major);
   printk (KERN_INFO "SisCom: Dispositivo: /dev/%s .\n", DEVICE_NAME);
 
+  // register BUTTON gpios
+  ret = gpio_request_array (buttons, ARRAY_SIZE (buttons));
+
+  if (ret)
+    {
+      printk (KERN_ERR "Unable to request GPIOs for BUTTONs: %d\n", ret);
+      return ret;
+    }
+
   ts = kthread_create (get_inputs, NULL, "get_inputs");
 
   if (ts)
     {
       wake_up_process (ts);
+    }
+  else
+    {
+      printk (KERN_ERR "Unable to create thread\n");
+      gpio_free_array (buttons, ARRAY_SIZE (buttons));
+      return ret;
     }
 
   return SUCCESS;
@@ -117,8 +142,16 @@ init_module (void)
  *
  */
 void
-cleanup_module (void)
+__exit tp_exit (void)
 {
+  // Se termina el hilo
+  if (ts)
+    {
+      kthread_stop (ts);
+    }
+
+  gpio_free_array (buttons, ARRAY_SIZE (buttons));
+
   /* Se elimina/desregistra el dispositivo y la clase */
   unregister_chrdev ((unsigned int)major, DEVICE_NAME);
   device_destroy (myclass, MKDEV (major, 0));
@@ -246,16 +279,20 @@ mychardev_uevent (__attribute__ ((unused)) struct device *dev,
 static int
 get_inputs (void *data)
 {
-  int i = 1;
-  int j, k, icopy;
-  char val[5], valinv[5];
+  int i, j, valint, valintcopy;
+  char valinv[5];
   printk (KERN_INFO "SisCom:Entre.\n");
 
   // loop until killed ...
   while (!kthread_should_stop ())
     {
-      if (i > 1000)
-        i = 0;
+      valint = 0;
+      for (i = 0; i < 4; i++)
+        {
+          if (gpio_get_value (buttons[i].gpio))
+            valint = valint + (2 * (i + 1));
+        }
+
       // msg[0] = (char) i;
       // msg[1] = '/0';
 
@@ -267,29 +304,31 @@ get_inputs (void *data)
 
       // val[0] = '0';
       j = 0;
-      icopy = i;
-      while (icopy)
+      valintcopy = valint;
+      while (valintcopy)
         {
-          valinv[j++] = icopy % 10 + '0';
-          icopy /= 10;
+          valinv[j++] = valintcopy % 10 + '0';
+          valintcopy /= 10;
         }
-      for (k = 0; k < j; k++)
-        {
-          val[k] = valinv[j - k - 1];
-        }
+      // for (i = 0; i < j; i++)
+      //   {
+      //     val[i] = valinv[j - i - 1];
+      //   }
 
       // val[j] = '/0';
       // memcpy(msg, i, sizeof(i));
       // sprintf
 
       // strcpy(msg, i);
-      strcpy (msg, val);
+      strcpy (msg, valinv);
       // i++;
-      printk (KERN_INFO "SisCom: Nuevo mensaje: %s. val: %s valor i: %d\n",
-              msg, val, i);
+      printk (KERN_INFO "SisCom: Nuevo mensaje: %s. valor : %d\n", msg,
+              valint);
       mdelay (1000);
-      i++;
     }
 
   return 0;
 }
+
+module_init(tp_init);
+module_exit(tp_exit);
