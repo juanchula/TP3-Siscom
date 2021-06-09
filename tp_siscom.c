@@ -13,11 +13,12 @@
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
 
-int __init tp_init (void);
-void __exit tp_exit (void);
+int init_module (void);
+void cleanup_module (void);
 static int device_open (__attribute__ ((unused)) struct inode *inode,
                         __attribute__ ((unused)) struct file *file);
 static int device_release (__attribute__ ((unused)) struct inode *inode,
@@ -37,15 +38,15 @@ static struct task_struct *ts = NULL;
 
 /* Define BUTTONs */
 static struct gpio buttons[] = {
-  // { 12, GPIOF_IN, "BUTTON 1" },
-  // { 13, GPIOF_IN, "BUTTON 2" },
-  // { 19, GPIOF_IN, "BUTTON 3" },
-  // { 26, GPIOF_IN, "BUTTON 4" },
+{ 12, GPIOF_IN, "BUTTON 1" },
+{ 13, GPIOF_IN, "BUTTON 2" },
+{ 19, GPIOF_IN, "BUTTON 3" },
+{ 26, GPIOF_IN, "BUTTON 4" },
 };
 
 #define SUCCESS 0
 #define DEVICE_NAME "siscom" /*!< Nombre del dispositivo (/proc/devices). */
-#define BUF_LEN 10           /*!< Longitud maxima del mensaje. */
+#define BUF_LEN 128          /*!< Longitud maxima del mensaje. */
 
 MODULE_LICENSE ("Dual BSD/GPL");
 MODULE_AUTHOR ("FERNANDEZ, Juan Ignacio");
@@ -54,8 +55,8 @@ static int major;           /*!< Numero major asignado al dispositivo. */
 static int Device_Open = 0; /*!< 0 -> No abierto ; 1 -> Abierto.  Se usa para
                                      impedir multiples disp abiertos. */
 static struct class *myclass = NULL; /*!< Clase */
-static uint8_t *valor;
-static uint8_t *mensaje;
+static char *valor;
+static char *mensaje;
 
 /*
  * Esta estructura ejecutará las funciones que se llamen cuando
@@ -72,11 +73,10 @@ static struct file_operations fops = { .read = device_read,
  *
  * @return int 0 en el caso que finalice correctamente.
  */
-int __init
-tp_init (void)
+int
+init_module (void)
 {
   int ret = 0;
-
   if ((valor = kmalloc (BUF_LEN, GFP_KERNEL)) == 0)
     {
       printk (KERN_ALERT "SisCom: Fallo al crear variable valor:\n");
@@ -86,7 +86,8 @@ tp_init (void)
   if ((mensaje = kmalloc (BUF_LEN, GFP_KERNEL)) == 0)
     {
       printk (KERN_ALERT "SisCom: Fallo al crear variable mensaje:\n");
-      goto fail1;
+      kfree (valor);
+      return -1;
     }
 
   memset (valor, ' ', BUF_LEN);
@@ -99,14 +100,19 @@ tp_init (void)
       printk (KERN_ALERT
               "SisCom: Fallo en registrar el dispositivo caracter: %d.\n",
               major);
-      goto fail2;
+      kfree (mensaje);
+      kfree (valor);
+      return major;
     }
   /* Se crea la clase */
   myclass = class_create (THIS_MODULE, DEVICE_NAME);
   if (IS_ERR (myclass))
     {
       pr_err (KERN_ERR "SisCom: Error al crear la case %s.\n", DEVICE_NAME);
-      goto fail3;
+      kfree (mensaje);
+      kfree (valor);
+      unregister_chrdev ((unsigned int)major, DEVICE_NAME);
+      return (int)(PTR_ERR (myclass));
     }
   myclass->dev_uevent = mychardev_uevent;
 
@@ -116,22 +122,26 @@ tp_init (void)
     {
       pr_err (KERN_ERR "SisCom: Error al creal el dispositivo %s.\n",
               DEVICE_NAME);
-      goto fail4;
+      kfree (mensaje);
+      kfree (valor);
+      class_destroy (myclass);
+      unregister_chrdev ((unsigned int)major, DEVICE_NAME);
+      return -1;
     }
 
-  printk (KERN_INFO
-          "SisCom: Inicializado con exito. Nombre: %s , Major: %d.\n",
-          DEVICE_NAME, major);
-  printk (KERN_INFO "SisCom: Dispositivo: /dev/%s .\n", DEVICE_NAME);
+    // register BUTTON gpios
+  ret = gpio_request_array (buttons, ARRAY_SIZE (buttons));
 
-  // register BUTTON gpios
-  // ret = gpio_request_array (buttons, ARRAY_SIZE (buttons));
-
-  // if (ret)
-  //   {
-  //     printk (KERN_ERR "Unable to request GPIOs for BUTTONs: %d\n", ret);
-  //     return ret;
-  //   }
+  if (ret)
+    {
+      printk (KERN_ERR "Unable to request GPIOs for BUTTONs: %d\n", ret);
+      kfree (mensaje);
+      kfree (valor);
+      device_destroy (myclass, MKDEV (major, 0));
+      class_destroy (myclass);
+      unregister_chrdev ((unsigned int)major, DEVICE_NAME);
+      return ret;
+    }
 
   ts = kthread_create (get_inputs, NULL, "get_inputs");
 
@@ -142,55 +152,58 @@ tp_init (void)
   else
     {
       printk (KERN_ERR "Unable to create thread\n");
-      goto fail5;
+      kfree (mensaje);
+      kfree (valor);
+      device_destroy (myclass, MKDEV (major, 0));
+      class_destroy (myclass);
+      unregister_chrdev ((unsigned int)major, DEVICE_NAME);
+      gpio_free_array (buttons, ARRAY_SIZE (buttons));
+      return -1;
     }
 
+  printk (KERN_INFO
+          "SisCom: Inicializado con exito. Nombre: %s , Major: %d.\n",
+          DEVICE_NAME, major);
+  printk (KERN_INFO "SisCom: Dispositivo: /dev/%s .\n", DEVICE_NAME);
+
   return SUCCESS;
-
-fail5:
-  device_destroy (myclass, MKDEV (major, 0));
-
-fail4:
-  class_destroy (myclass);
-
-fail3:
-  unregister_chrdev ((unsigned int)major, DEVICE_NAME);
-
-fail2:
- __clear_user(mensaje, BUF_LEN);
-  kfree (mensaje);
-
-fail1:
- __clear_user(valor, BUF_LEN);
-  kfree (valor);
-  return 1;
 }
 
 /**
  * @brief Esta función se llama cuando se descarga/elimina el módulo.
  *
  */
-void __exit
-tp_exit (void)
+void
+cleanup_module (void)
 {
+
+  // gpio_free_array (buttons, ARRAY_SIZE (buttons));
+
+  /* Se elimina/desregistra el dispositivo y la clase */
+  device_destroy (myclass, MKDEV (major, 0));
+  printk (KERN_INFO "SisCom: Se elimino el dispositivo\n");
+  unregister_chrdev ((unsigned int)major, DEVICE_NAME);
+  printk (KERN_INFO "SisCom: Se quito el registro del dispositivo\n");
+  class_destroy (myclass);
+  printk (KERN_INFO "SisCom: Se elimino la clase\n");
+
   // Se libera valor y mesnaje
-   __clear_user(valor, BUF_LEN);
+  //  __clear_user(valor, BUF_LEN);
   kfree (valor);
-   __clear_user(mensaje, BUF_LEN);
+  printk (KERN_INFO "SisCom: Se libro valor\n");
+  //  __clear_user(mensaje, BUF_LEN);
   kfree (mensaje);
+  printk (KERN_INFO "SisCom: Se libro mensaje\n");
+
+  gpio_free_array (buttons, ARRAY_SIZE (buttons));
+  printk (KERN_INFO "SisCom: Se liberaron los botones\n");
 
   // Se termina el hilo
   if (ts)
     {
       kthread_stop (ts);
+      printk (KERN_INFO "SisCom: Se libro hilo\n");
     }
-
-  // gpio_free_array (buttons, ARRAY_SIZE (buttons));
-
-  /* Se elimina/desregistra el dispositivo y la clase */
-  unregister_chrdev ((unsigned int)major, DEVICE_NAME);
-  device_destroy (myclass, MKDEV (major, 0));
-  class_destroy (myclass);
 }
 
 /**
@@ -256,18 +269,6 @@ device_read (__attribute__ ((unused)) struct file *filp, char *buffer,
       bytes_read++;
     }
 
-  // if(*offset==0){
-  // if (copy_to_user (buffer, valor, BUF_LEN))
-  //     {
-  //       printk (KERN_ERR "SisCom: Error al copiar el mensaje.\n");
-  //       return 0;
-  //     }
-  // *offset+=BUF_LEN;
-  // return BUF_LEN;
-  // }
-
-  //   __clear_user(valor, BUF_LEN);
-
   return bytes_read;
 }
 
@@ -325,64 +326,20 @@ mychardev_uevent (__attribute__ ((unused)) struct device *dev,
 static int
 get_inputs (void *data)
 {
-  int i, valint;
+  int valint;
   printk (KERN_INFO "SisCom:Entre.\n");
 
   // loop until killed ...
   while (!kthread_should_stop ())
     {
       valint = 256;
-      // for (i = 0; i < 4; i++)
-      //   {
-      //     if (gpio_get_value (buttons[i].gpio))
-      //       {
-      //         valint = valint + (2 * (i + 1));
-      //         if (i == 0)
-      //           {
-      //             valint--;
-      //           }
-      //       }
-      //   }
 
       memset (valor, ' ', BUF_LEN);
       sprintf (valor, "%d ", valint);
 
-      // msg[0] = (char) i;
-      // msg[1] = '/0';
-
-      // if (copy_from_user (msg, buff, len))
-      // {
-      //   printk (KERN_ERR "SisCom: Error al copiar el mensaje.\n");
-      //   return 0;
-      // }
-
-      // val[0] = '0';
-      // j = 0;
-      // valintcopy = valint;
-      // while (valintcopy)
-      //   {
-      //     valinv[j++] = valintcopy % 10 + '0';
-      //     valintcopy /= 10;
-      //   }
-      // for (i = 0; i < j; i++)
-      //   {
-      //     val[i] = valinv[j - i - 1];
-      //   }
-
-      // val[j] = '/0';
-      // memcpy(msg, i, sizeof(i));
-      // sprintf
-
-      // strcpy(msg, i);
-      // strcpy (msg, valinv);
-      // i++;
-      printk (KERN_INFO "SisCom: Nuevo mensaje -> valor : %d - %s\n", valint,
-              valor);
+      printk (KERN_INFO "SisCom: Hola\n");
       mdelay (5000);
     }
 
   return 0;
 }
-
-module_init (tp_init);
-module_exit (tp_exit);
