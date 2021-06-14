@@ -154,16 +154,24 @@ static ssize_t
 my_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 {
   int i;
-  selector++;
-  if (selector == 3)
-    {
-      selector = 0;
-    }
+  char msg[15];
+  selector = 0;
+
+  if (len > 15)
+    len = 15;
+
+  if (copy_from_user (msg, buf, len) != 0)
+    return -EFAULT;
+
+  if (strncmp (msg, "sensor1", 15) == 0)
+    selector = 1;
+
+  if (strncmp (msg, "sensor2", 15) == 0)
+    selector = 2;
   // turn all LEDs off
   for (i = 0; i < ARRAY_SIZE (leds); i++)
-    {
-      gpio_set_value (leds[i].gpio, 0);
-    }
+    gpio_set_value (leds[i].gpio, 0);
+
   if (selector > -1 && selector < ARRAY_SIZE (leds))
     gpio_set_value (leds[selector].gpio, 1);
 
