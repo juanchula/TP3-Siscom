@@ -21,7 +21,7 @@ static dev_t first;       // Global variable for the first device number
 static struct cdev c_dev; // Global variable for the character device structure
 static struct class *myclass = NULL; /*!< Clase */
 
-static int selector = 1;
+static int selector = 0;
 
 /* Task handle to identify thread */
 // static struct task_struct *ts = NULL;
@@ -37,6 +37,13 @@ static struct gpio buttons2[] = {
   { 13, GPIOF_IN, "BUTTON 2 2" },
   { 19, GPIOF_IN, "BUTTON 2 3" },
   { 26, GPIOF_IN, "BUTTON 2 4" },
+};
+
+/* Define LEDS */
+static struct gpio leds[] = {
+  { 16, GPIOF_OUT_INIT_HIGH, "LED 1" },
+  { 20, GPIOF_OUT_INIT_HIGH, "LED 2" },
+  { 21, GPIOF_OUT_INIT_HIGH, "LED 3" },
 };
 
 #define DEVICE_NAME "siscom" /*!< Nombre del dispositivo (/proc/devices). */
@@ -146,11 +153,20 @@ my_read (struct file *f, char __user *buf, size_t len, loff_t *off)
 static ssize_t
 my_write (struct file *f, const char __user *buf, size_t len, loff_t *off)
 {
+  int i;
   selector++;
   if (selector == 3)
     {
       selector = 0;
     }
+  // turn all LEDs off
+  for (i = 0; i < ARRAY_SIZE (leds); i++)
+    {
+      gpio_set_value (leds[i].gpio, 0);
+    }
+  if (selector > -1 && selector < ARRAY_SIZE (leds))
+    gpio_set_value (leds[selector].gpio, 1);
+
   return len;
 }
 
@@ -163,7 +179,7 @@ static struct file_operations pugs_fops = { .owner = THIS_MODULE,
 static int __init
 drv4_init (void) /* Constructor */
 {
-  int ret;
+  int ret, i;
   struct device *dev_ret;
 
   printk (KERN_INFO "SdeC: drv4 Registrado exitosamente..!!\n");
@@ -196,8 +212,8 @@ drv4_init (void) /* Constructor */
       unregister_chrdev_region (first, 1);
       return ret;
     }
-  ret = gpio_request_array (buttons1, ARRAY_SIZE (buttons1));
 
+  ret = gpio_request_array (buttons1, ARRAY_SIZE (buttons1));
   if (ret)
     {
       printk (KERN_ERR "Unable to request GPIOs for BUTTONs: %d\n", ret);
@@ -207,8 +223,8 @@ drv4_init (void) /* Constructor */
       unregister_chrdev_region (first, 1);
       return ret;
     }
-  ret = gpio_request_array (buttons2, ARRAY_SIZE (buttons2));
 
+  ret = gpio_request_array (buttons2, ARRAY_SIZE (buttons2));
   if (ret)
     {
       printk (KERN_ERR "Unable to request GPIOs for BUTTONs: %d\n", ret);
@@ -219,12 +235,32 @@ drv4_init (void) /* Constructor */
       gpio_free_array (buttons1, ARRAY_SIZE (buttons1));
       return ret;
     }
+
+  ret = gpio_request_array (leds, ARRAY_SIZE (leds));
+  if (ret)
+    {
+      printk (KERN_ERR "Unable to request GPIOs: %d\n", ret);
+      cdev_del (&c_dev);
+      device_destroy (myclass, first);
+      class_destroy (myclass);
+      unregister_chrdev_region (first, 1);
+      gpio_free_array (buttons1, ARRAY_SIZE (buttons1));
+      gpio_free_array (buttons2, ARRAY_SIZE (buttons2));
+    }
+  // turn all LEDs off
+  for (i = 0; i < ARRAY_SIZE (leds); i++)
+    {
+      gpio_set_value (leds[i].gpio, 0);
+    }
+  gpio_set_value (leds[0].gpio, 1);
+
   return 0;
 }
 
 static void __exit
 drv4_exit (void) /* Destructor */
 {
+  int i;
   cdev_del (&c_dev);
   device_destroy (myclass, first);
   class_destroy (myclass);
@@ -234,6 +270,13 @@ drv4_exit (void) /* Destructor */
 
   gpio_free_array (buttons1, ARRAY_SIZE (buttons1));
   gpio_free_array (buttons2, ARRAY_SIZE (buttons2));
+
+  for (i = 0; i < ARRAY_SIZE (leds); i++)
+    {
+      gpio_set_value (leds[i].gpio, 0);
+    }
+  // unregister all GPIOs
+  gpio_free_array (leds, ARRAY_SIZE (leds));
 }
 
 module_init (drv4_init);
